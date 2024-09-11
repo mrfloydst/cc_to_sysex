@@ -1,0 +1,223 @@
+<html>
+    <head>
+        <title>Floyd's CC to sysex router</title>
+        <style>
+            * {
+                box-sizing: border-box;
+            }
+            body {
+                font-family: Calibri, Arial, Helvetica, sans-serif;
+                background-color: var(--white);
+                overflow: hidden;
+                touch-action: none;
+            }
+            label {
+                display:inline-block;
+                vertical-align: top;
+                margin-right:10px;
+                margin-bottom:20px;
+            }
+            article {
+                border:1px solid black;
+                padding:20px;
+                text-align: left;
+                width:50%;
+                max-width: 720px;
+                margin:50px auto;
+                box-shadow: 0 0 15px #333;
+            }
+            input[type=text],
+            input[type=number],
+            select {
+                border:1px solid black;
+                max-width: 100%;
+                padding:3px 5px;
+                width:100%;
+            }
+            section {
+                display:grid;
+                clear:both;
+                margin:0;
+                padding:0;
+                grid-template-columns: 49% 49%;
+                gap:2%;
+            }
+            section:nth-of-type(2),
+            section.threecols {
+                grid-template-columns: 40% 24% 9% 24%;
+                gap:1%;
+            }
+            input[type=button] {
+                width:40px;
+                border-radius: 40px;
+                cursor: pointer;
+                border:0;
+                margin-bottom: 40px;
+                background-color: #333;
+                color:white;
+                font-weight: bold;
+                padding:13px 0;
+            }
+        </style>
+    </head>
+    <body>
+        <article>
+            <h1>Floyd's CC to sysex router</h1>
+            <p><b>Instructions:</b> Choose the MIDI input and output first. Then, enter the first part of the SysEx string into field A and the last part into field B. Then click the "CC number" field and move the knob on your MIDI controller. Use the + button to add more translations.</p>
+            <section>
+                <label>
+                    <select size="5" class="navi" id="midi_input_device">
+                        <option>none</option>
+                    </select><br>
+                    Input
+                </label>
+                <label>
+                    <select size="5" class="navi" id="midi_output_device">
+                        <option>none</option>
+                    </select><br>
+                    Output
+                </label>
+            </section>
+            <section id="sysexsetup_00" class="threecols">
+                <label for="input_cc">
+                    <input type="number" min="1" max="127" id="input_cc" placeholder="Move control" value=""><br>
+                    CC number (move controller to learn)
+                </label>
+                <label for="sysex_a">
+                    <input type="text" min="1" max="127"  id="sysex_a" placeholder="SysEx A" value=""><br>
+                    SysEx string part 1
+                </label>
+                <label><span id="midival"></span></label>
+                <label for="sysex_b">
+                    <input type="text" min="1" max="127"  id="sysex_b" placeholder="SysEx B" value=""><br>
+                    SysEx string part 2
+                </label>
+            </section>
+            <section>
+                <input type="button" value="+" id="add" title="add another mapping">
+            </section>
+            <section>
+                <label for="forward">
+                    <input type="checkbox" id="forward" value="1" checked> Forward all other MIDI
+                </label>
+            </section>
+        </article>
+        <script>
+            let midi = null;            // global MIDIAccess object
+            let midi_output=null;       // output device
+            let midi_input=null;        // input device
+            let midi_in_channel=-1;     // input channel
+            let midi_out_channel=-1;    // input channel
+            let input_cc=11;            // input cc
+            let output_cc1=11;          // output cc 1
+            let output_cc2=12;          // output cc 2
+            let outc=null;
+            let statcc=null;
+            let sustain=0;              // sustain status
+
+            function listInputsAndOutputs(midiAccess) {
+                for (const entry of midiAccess.inputs) {
+                    const input = entry[1];
+                    /** create options */
+                    document.getElementById("midi_input_device").appendChild(new Option(input.name,input.id));
+                }
+
+                for (const entry of midiAccess.outputs) {
+                    const output = entry[1];
+                    /** create options */
+                    document.getElementById("midi_output_device").appendChild(new Option(output.name,output.id));
+                }
+            }
+
+            function onMIDISuccess(midiAccess) {
+                midi = midiAccess; // store in the global (in real usage, would probably keep in an object instance)
+                for (const entry of midiAccess.outputs) {
+                    midi_output = entry[1];
+                }
+                for (const entry of midiAccess.inputs) {
+                    midi_input = entry[1];
+                }
+                listInputsAndOutputs(midiAccess);
+                /** event handler for midi device selector */
+                document.querySelectorAll("#midi_input_device,#midi_output_device").forEach(cb=>{
+                    cb.addEventListener("click",function(evt){
+                        switch(this.id) {
+                            case "midi_input_device":
+                                midi_input = midiAccess.inputs.get(this.options[this.selectedIndex].value);
+                                setupInputs();
+                                break;
+                            case "midi_output_device":
+                                midi_output = midiAccess.outputs.get(this.options[this.selectedIndex].value);
+                                break;
+                        }
+                    });
+                });
+                document.querySelectorAll("#input_midi_channel,#output_midi_channel").forEach(cb=>{
+                    cb.addEventListener("change",function(evt){
+                        switch(this.id) {
+                            case "input_midi_channel":
+                                midi_in_channel=parseInt(this.selectedIndex-1);
+                                break;
+                            case "output_midi_channel":
+                                midi_out_channel=parseInt(this.selectedIndex-1);
+                                break;
+                        }
+                    });
+                });
+                document.getElementById("add").addEventListener("click",function(){
+                    var clone=document.getElementById("sysexsetup_00").cloneNode(true);
+                    clone.className="threecols";
+                    clone.id="sysexsetup_0"+(document.getElementsByClassName("threecols").length+1);
+                    document.getElementById("sysexsetup_00").after(clone);
+                });
+                setupInputs();
+            }
+
+            function setupInputs() {
+                midi_input.onmidimessage = (msg) => {
+                    statcc=msg.data[1];
+                    if(msg.data[0]==176&&msg.data[1]==64) {
+                        sustain=msg.data[2];
+                    }
+                    //  the source CC has been changed
+                    if(msg.data[0]>=176&&msg.data[0]<=191&&midi_in_channel==-1) {
+                        if(document.activeElement.id=="input_cc"&&document.activeElement.parentElement.parentElement!=null&&document.activeElement.parentElement.parentElement.className.indexOf("threecols")>=0) {
+                            document.activeElement.value=msg.data[1];
+                            document.activeElement.parentElement.parentElement.className="threecols threecols_"+msg.data[1];
+                            document.activeElement.blur();
+                        }
+                        document.querySelectorAll(".threecols_"+msg.data[1]+" span#midival").forEach(cb=>{
+                            cb.innerHTML=msg.data[2].toString(16);
+                            if(midi_input.name!=midi_output.name) {
+                                var sxdata=cb.parentElement.parentElement.querySelector("#sysex_a").value+","+cb.parentElement.parentElement.querySelector("#midival").innerHTML+","+cb.parentElement.parentElement.querySelector("#sysex_b").value;
+                                sxdata=sxdata.replace(/\s/g, '');
+                                sxdata=sxdata.split(",");
+                                for(var i=0;i<sxdata.length;i++) {
+                                    sxdata[i]="0x"+sxdata[i];
+                                }
+                                sendSX(sxdata);
+                            }
+                        });
+                    }
+                    else {
+                        if(document.getElementById("forward").checked) {
+                            midi_output.send(msg.data);
+                        }
+                    }
+                };
+            }
+            
+            function sendSX(sysex) {
+                midi_output.send(sysex);
+            }
+
+            function onMIDIFailure(msg) {
+                alert("Y U do dis :-(");
+                console.error(`Failed to get MIDI access - ${msg}`);
+            }
+
+            navigator.requestMIDIAccess({sysex:true}).then(onMIDISuccess, onMIDIFailure);
+
+        </script>
+    </body>
+</html>
